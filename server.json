@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.kangax/przilla",
+  "title": "PRzilla",
+  "description": "CrossFit and HYROX workout search, benchmark targets, scaling guidance, and movement technique.",
+  "version": "1.0.0",
+  "websiteUrl": "https://przilla.app",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://przilla.app/mcp"
+    }
+  ],
+  "repository": {
+    "url": "https://github.com/kangax/przilla-mcp",
+    "source": "github"
+  }
+}
