@@ -33,37 +33,58 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "$archive"
           tar xzf "$archive" mcp-publisher
-      - name: Check production connector
+      - name: Check production authorization discovery
         shell: python
         run: |
           import json
+          import urllib.error
+          import urllib.parse
           import urllib.request
 
           with open("server.json") as source:
               endpoint = json.load(source)["remotes"][0]["url"]
 
-          def call(method, params):
-              body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-              request = urllib.request.Request(
-                  endpoint,
-                  data=json.dumps(body).encode(),
-                  headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
-              )
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  result = json.load(response)
-              assert "error" not in result, result
-              return result["result"]
+          resource = urllib.parse.urlsplit(endpoint)
+          assert resource.scheme == "https"
+          origin = f"{resource.scheme}://{resource.netloc}"
+          resource_metadata_url = origin + "/.well-known/oauth-protected-resource" + resource.path
 
-          tools = call("tools/list", {})["tools"]
-          assert len(tools) == 3
-          assert all(tool["annotations"]["readOnlyHint"] is True for tool in tools)
-          workout = call("tools/call", {"name": "get_workout", "arguments": {"workout": "Fran"}})
-          assert not workout.get("isError"), workout
-          data = workout["structuredContent"]
-          assert data["name"] == "Fran"
-          assert data["url"].startswith("https://przilla.app/wod/fran?")
-          assert data["movements"] and data["levels"]
-          print("Three read-only tools discovered; Fran lookup verified.")
+          request = urllib.request.Request(
+              endpoint,
+              data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}).encode(),
+              headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=30):
+                  raise AssertionError("Unauthenticated MCP access must be rejected")
+          except urllib.error.HTTPError as error:
+              assert error.code == 401, f"Expected 401, received {error.code}"
+              challenge = error.headers.get("WWW-Authenticate", "")
+              assert challenge.startswith("Bearer "), "Missing Bearer challenge"
+              assert f'resource_metadata="{resource_metadata_url}"' in challenge
+
+          with urllib.request.urlopen(resource_metadata_url, timeout=30) as response:
+              metadata = json.load(response)
+          assert metadata["resource"] == endpoint
+          assert "catalog:read" in metadata["scopes_supported"]
+          assert "header" in metadata["bearer_methods_supported"]
+          assert len(metadata["authorization_servers"]) == 1
+          issuer = metadata["authorization_servers"][0]
+          issuer_parts = urllib.parse.urlsplit(issuer)
+          assert issuer_parts.scheme == "https" and issuer_parts.netloc == resource.netloc
+          discovery_url = origin + "/.well-known/oauth-authorization-server" + issuer_parts.path
+          with urllib.request.urlopen(discovery_url, timeout=30) as response:
+              discovery = json.load(response)
+          assert discovery["issuer"] == issuer
+          assert "catalog:read" in discovery["scopes_supported"]
+          assert "offline_access" in discovery["scopes_supported"]
+          assert "authorization_code" in discovery["grant_types_supported"]
+          assert "refresh_token" in discovery["grant_types_supported"]
+          assert "S256" in discovery["code_challenge_methods_supported"]
+          for field in ["authorization_endpoint", "token_endpoint", "jwks_uri"]:
+              target = urllib.parse.urlsplit(discovery[field])
+              assert target.scheme == "https" and target.netloc == resource.netloc, field
+          print("Anonymous access rejected; resource and OAuth discovery verified. Authenticated tool execution requires a separate authorized client.")
       - name: Validate listing
         run: ./mcp-publisher validate
       - name: Authenticate with GitHub identity
